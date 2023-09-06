@@ -1,74 +1,63 @@
+import pickle
+
 import numpy as np
-import pandas as pd
-from keras.src.preprocessing.text import Tokenizer
+import tensorflow
+from tensorflow.python.keras.models import load_model
+
+from EncDecMain import EncDecMain
 
 
-def preprocess_raw(in_file, out_csv):
-    m2_file = open(in_file, "r").read().strip().split("\n\n")
-    skippable_data = {"noop", "UNK", "Um"}
+def Predict(input_sentence, model):
+    with open("token_cor_out.pickle", "rb") as t1:
+        token_cor_out = pickle.load(t1)
+    with open("token_inc.pickle", "rb") as t2:
+        token_inc = pickle.load(t2)
 
-    correct = []
-    incorrect = []
+    cor_dict = token_cor_out.word_index
+    inv_cor = {v: k for k, v in cor_dict.items()}
 
-    for data in m2_file:
-        corr_sentence = data.split("\n")[0].split(" ")[1:]
-        edits = data.split("\n")[1:]
-        offset = 0
+    input_sentence = token_inc.texts_to_sequences([input_sentence])[0]
 
-        for edit in edits:
-            edit = edit.split("|||")
-            coder = int(edit[-1])
+    init_hs = tensorflow.zeros([1, 64])
+    init_cs = tensorflow.zeros([1, 64])
 
-            if (edit[1] not in skippable_data) and (coder == 0):
-                edit_data = edit[0].split()[1:]
-                start = int(edit_data[0])
-                end = int(edit_data[1])
-                corr = edit[2].split()
-                corr_sentence[start + offset: end + offset] = corr
-                offset = offset - (end - start) + len(corr)
-        correct.append(" ".join(corr_sentence))
+    enc_init_st = [init_hs, init_cs]
+    input_sentence = tensorflow.keras.preprocessing.sequence.pad_sequences([input_sentence], maxlen=25, padding="post")[0]
 
-    for data in m2_file:
-        temp = data.split("\n")[0].split(" ")[1:]
-        temp = " ".join(temp)
-        incorrect.append(temp)
+    [enc_out, enc_state_h, enc_state_c] = model.layers[0](np.expand_dims(input_sentence, 0), enc_init_st)
 
-    df = pd.DataFrame()
+    all = []
+    predicted = []
+    sent = []
 
-    df["correct"] = correct
-    df["incorrect"] = incorrect
+    curr_vec = np.ones((1, 1), dtype="int")
 
-    sameSent = []
+    for i in range(25):
+        inf_output, dec_state_h, dec_state_c, att_weights, cont_vect = model.layers[1].osd(curr_vec, enc_out, enc_state_h, enc_state_c)
 
-    for i in range(len(df.values)):
-        if df.values[i][0] == df.values[i][1]:
-            sameSent.append(i)
+        enc_state_h = dec_state_h
+        enc_state_c = dec_state_c
 
-    df.drop(sameSent, inplace=True)
+        curr_vec = np.reshape(np.argmax(inf_output), (1, 1))
 
-    df.dropna(inplace=True)
-    df.drop_duplicates(inplace=True)
-    df.reset_index(inplace=True, drop=True)
+        if inv_cor[curr_vec[0][0]] == '@':
+            break
 
-    df.to_csv(out_csv, index=False)
+        all.append(np.array(inf_output[0]))
+        predicted.append(curr_vec[0][0])
 
-    return df
+    for i in predicted:
+        sent.append(inv_cor[i])
 
+    return sent
 
-def tokenize_and_pad(df):
-    df["correct_inp"] = "$" + df["correct"].astype(str)
-    df["correct_out"] = df["correct"].astype(str) + "@"
+if __name__ == '__main__':
+    model = load_model("Insert model path here")
+    while True:
+        print("Enter a sentence, please!")
+        orig_sent = input()
 
-    tokenizer_inc = Tokenizer(filters="", lower=True, char_level=False)
-    tokenizer_inc.fit_on_texts(df["incorrect"].values)
+        corrected_sent = Predict(orig_sent, model)
+        print("Predicted correct sentence is:")
+        print(corrected_sent)
 
-    inc_train = np.array(tokenizer_inc.texts_to_sequences(df["incorrect"].values))
-    print(inc_train)
-
-    return df
-
-
-training_df = preprocess_raw("test.m2", "data_test.csv")
-print("Done preprocessing!")
-
-tokenize_and_pad(training_df)
